@@ -1,0 +1,10 @@
+<launch>
+  <!-- 语音控制节点 -->
+  <node name="juxi_voice_node" pkg="juxi_voice" type="voice_node.py" output="screen" />
+
+  <!-- RViz 可视化节点 -->
+  <node name="juxi_rviz_node" pkg="juxi_voice" type="rviz_control.py" output="screen" />
+
+  <!-- RViz 可视化界面 -->
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find juxi_voice)/juxi_voice.rviz" />
+</launch>

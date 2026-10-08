@@ -1,0 +1,523 @@
+English | [简体中文](ros1-rviz_CN.md)
+
+# ROS1-rviz Visualization (Type-C / UART / IIC 3-in-1 Version)
+
+## 1. Environment Setup
+
+#### System Requirements
+
+- **Operating System**: Ubuntu 20.04 or 18.04
+- **ROS1 Version**: Noetic (recommended) or Melodic
+
+#### Install Dependencies
+
+```bash
+# 1. 更新源
+sudo apt update
+
+# 2. 安装 ROS1 桌面完整版
+# (如果已安装ROS1，跳过)
+# sudo apt install ros-noetic-desktop-full -y    # Ubuntu 20.04
+# sudo apt install ros-melodic-desktop-full -y   # Ubuntu 18.04
+
+# 3. 安装本项目依赖（同时支持串口和I2C）
+sudo apt install python3-pip ros-noetic-rviz i2c-tools -y
+pip3 install pyserial smbus2
+
+# 如果是 Melodic (Python2)
+# sudo apt install python-pip ros-melodic-rviz i2c-tools -y
+# pip install pyserial smbus2
+
+# 4. 如果使用 I2C 接线，额外安装
+sudo apt install python3-smbus2 -y
+```
+
+---
+
+## 2. Three Wiring Options
+
+The AI Voice Interaction Module supports the following three wiring options:
+
+| Wiring | Interface | Device File | Protocol | Baud Rate |
+|---|---|---|---|---|
+| **Type-C** | USB Type-C | `/dev/ttyUSB0` or `/dev/ttyACM0` | Serial frame `FE EF XX YY EE` | 115200 |
+| **UART** | GPIO serial pins | `/dev/ttyAMA0` or `/dev/ttyS0` | Serial frame `FE EF XX YY EE` | 115200 |
+| **IIC** | I2C bus (SDA/SCL) | `/dev/i2c-1` | Register read/write (0x2A) | — |
+
+#### Auto-Detection Mechanism
+
+When the ROS1 node starts, it automatically detects the wiring option in the following order:
+1. Try serial first: check `/dev/ttyUSB0` → `/dev/ttyACM0` → `/dev/ttyAMA0` → `/dev/ttyS0` in sequence
+2. Then try I2C: check whether slave `0x2A` exists on `/dev/i2c-1`
+3. Serial detection only requires the device file to exist and be openable to be considered usable, with no extra verification needed
+
+Once any one option is detected, detection stops and that option is locked in for use. No manual configuration is required.
+
+---
+
+## 3. IIC Protocol
+
+#### IIC Slave Configuration
+
+| Parameter | Value |
+|---|---|
+| IIC slave address | **0x2A** |
+| IIC bus | /dev/i2c-1 |
+
+#### Register Definitions
+
+| Register Address | R/W | Description |
+|---|---|---|
+| **0xDA** | R | Recognition result register; reading 1 byte = command word ID. When nothing is recognized, the result is 0x00. |
+| **0xD1** | W | Passive playback voice register; write 1 byte of command word ID. |
+| **0xD2** | W | Function-word playback voice register; write 1 byte of command word ID. |
+| **0xD3** | W | Command-word playback voice register; write 1 byte of command word ID. |
+
+---
+
+## 4. Serial Protocol (Type-C / UART)
+
+#### Frame Format
+
+Each frame is fixed at **5 bytes**:
+
+| Byte 0 | Byte 1 | Byte 2 | Byte 3 | Byte 4 |
+|---|---|---|---|---|
+| 0xFE | 0xEF | Command high byte | Command low byte | 0xEE |
+| Frame header | Frame header | CMD_H | CMD_L | Frame tail |
+
+#### Baud Rate
+
+Fixed at **115200** bps.
+
+---
+
+## 5. Create the Workspace and Directory Structure
+
+#### Create the catkin Workspace
+
+```bash
+mkdir -p ~/juxi_speech_ws/src
+cd ~/juxi_speech_ws/src
+```
+
+#### Create the ROS Package
+
+```bash
+catkin_create_pkg juxi_voice rospy std_msgs visualization_msgs
+```
+
+#### Final Directory Structure
+
+Place the files provided by this project into their corresponding locations:
+
+```
+~/juxi_speech_ws/
+├── build/
+├── devel/
+└── src/
+    └── juxi_voice/
+        ├── CMakeLists.txt      # (替换为本项目提供的)
+        ├── package.xml          # (替换为本项目提供的)
+        ├── juxi_voice.rviz      # (新建：RViz预配置文件)
+        ├── launch/
+        │   └── juxi_voice.launch # (新建：一键启动文件)
+        └── scripts/
+            ├── voice_node.py     # (新建：语音节点)
+            └── rviz_control.py   # (新建：RViz控制节点)
+```
+
+---
+
+## 6. File Contents and Placement
+
+#### File 1: `voice_node.py` (Voice Control Node)
+
+**Location**: `~/juxi_speech_ws/src/juxi_voice/scripts/voice_node.py`
+
+**Core Features**:
+- Automatically detects the Type-C / UART / IIC wiring option
+- Unified command word mapping table (114 command words, fully consistent with Excel protocol table V1)
+- Uses the corresponding communication backend (serial / I2C) based on the wiring option
+
+**Key Architecture**:
+
+```python
+# 统一命令数据: ID → (串口字节2, 串口字节3, 命令文本, 播报模式)
+CMD_DATA = {
+    1:   (0x01, 0x00, "欢迎语", "被"),
+    3:   (0x03, 0x00, "你好小犀", "主"),
+    14:  (0x00, 0x04, "小车前进", "主"),
+    84:  (0xFF, 0x5F, "这是红色", "被"),
+    ...
+}
+
+# 自动检测函数
+def detect_connection():
+    # 1. 尝试串口 /dev/ttyUSB0, /dev/ttyACM0, /dev/ttyAMA0, /dev/ttyS0
+    # 2. 尝试 I2C /dev/i2c-1 (从机地址 0x2A)
+    ...
+```
+
+(For the complete code, see the `voice_node.py` file provided by this project)
+
+#### File 2: `rviz_control.py` (RViz Control Node)
+
+**Location**: `~/juxi_speech_ws/src/juxi_voice/scripts/rviz_control.py`
+
+Subscribes to the `/juxi_voice_cmd` topic to receive command text, and updates the cube visualization according to the command.
+
+(For the complete code, see the `rviz_control.py` file provided by this project)
+
+#### File 3: `CMakeLists.txt` and `package.xml`
+
+Already provided in this project; simply replace the default files automatically generated by `catkin_create_pkg`.
+
+---
+
+## 7. Build and Run
+
+#### Build
+
+```bash
+cd ~/juxi_speech_ws
+catkin_make
+```
+
+#### Environment Variables
+
+```bash
+source ~/juxi_speech_ws/devel/setup.bash
+# 或写入 ~/.bashrc
+echo "source ~/juxi_speech_ws/devel/setup.bash" >> ~/.bashrc
+```
+
+#### Permission Setup
+
+```bash
+# I2C 权限
+sudo chmod 666 /dev/i2c-1
+# 串口权限
+sudo chmod 666 /dev/ttyUSB0
+sudo chmod 666 /dev/ttyACM0
+sudo chmod 666 /dev/ttyAMA0
+# 或加入用户组
+sudo usermod -aG dialout $USER
+sudo usermod -aG i2c $USER
+# 设置后需要重新登录生效
+```
+
+#### Run the Nodes
+
+**Option 1: One-click Launch (recommended)**
+
+```bash
+cd ~/juxi_speech_ws
+source devel/setup.bash
+roslaunch juxi_voice juxi_voice.launch
+```
+
+On launch, the voice node, the RViz control node, and the RViz visualization interface open automatically.
+
+**Option 2: Step-by-step Launch (3 terminals)**
+
+**Terminal 1**: Start roscore
+
+```bash
+roscore
+```
+
+**Terminal 2**: Voice node
+
+```bash
+cd ~/juxi_speech_ws
+source devel/setup.bash
+rosrun juxi_voice voice_node.py
+```
+
+On startup, the detected wiring option is displayed:
+```
+[INFO] 自动检测: IIC /dev/i2c-1 (从机地址 0x2A)
+[INFO] 语音节点启动完成 - IIC /dev/i2c-1 (从机地址 0x2A)
+```
+or
+```
+[INFO] 自动检测: UART /dev/ttyUSB0
+[INFO] 语音节点启动完成 - UART /dev/ttyUSB0
+```
+
+If no device is detected:
+```
+[FATAL] 未检测到AI语音交互模块！请检查接线 (Type-C / UART / IIC)
+[FATAL] 支持的端口: I2C(/dev/i2c-1) | 串口(/dev/ttyUSB0 /dev/ttyACM0 /dev/ttyAMA0 /dev/ttyS0)
+```
+
+**Terminal 3**: RViz control node
+
+```bash
+cd ~/juxi_speech_ws
+source devel/setup.bash
+rosrun juxi_voice rviz_control.py
+```
+
+**Terminal 4**: RViz visualization (directly load the preconfigured file, no manual setup needed)
+
+```bash
+rviz -d ~/juxi_speech_ws/src/juxi_voice/juxi_voice.rviz
+```
+
+Or open RViz first and then load it:
+
+```bash
+rviz
+# 菜单栏: File → Open Config → 选择 juxi_voice.rviz
+```
+
+---
+
+## 8. RViz Preconfiguration Notes
+
+`juxi_voice.rviz` is already preconfigured with the following, ready to use on launch with no manual steps:
+
+- **Fixed Frame**: `map`
+- **Marker display**: already subscribed to `/juxi_visual_marker` (single marker)
+- **MarkerArray display**: already subscribed to `/juxi_visual_markers` (multiple markers: robotic arm, battery, alarm, etc.)
+- **Viewpoint**: viewed from obliquely above, centered on the origin
+
+---
+
+## 9. Usage
+
+#### Wake-up
+Say **"你好小犀"** to the module → the module replies "我在"
+
+#### Sending Commands
+- "小车前进" → the cube moves forward
+- "亮红灯" → the cube turns red
+- "打开流水灯" → colors cycle
+- "报警" → a red pulsing sphere
+- "显示电量" → battery text
+
+#### Host-triggered Playback
+
+```bash
+# 被动播报 (I2C → 写 0xD1, 串口 → 发 FE EF FF XX EE)
+rostopic pub /juxi_passive_play std_msgs/String "data: '这是红色'"
+# 功能词播报 (I2C → 写 0xD2, 串口 → 发 FE EF 01 00 EE)
+rostopic pub /juxi_func_play std_msgs/String "data: '欢迎语'"
+# 命令词播报 (I2C → 写 0xD3, 串口 → 发 FE EF 00 04 EE)
+rostopic pub /juxi_cmd_play std_msgs/String "data: '小车前进'"
+```
+
+---
+
+## 10. Command Word ID Reference Table
+
+> 114 command words in total, fully consistent with `命令词播报词协议列表V1_中文.xlsx`.
+
+### Function Words (ID 1-10)
+
+| ID | Command Word | Serial Frame | Playback Mode |
+|---|---|---|---|
+| 1 | Welcome message | FE EF 01 00 EE | Passive |
+| 2 | Rest message | FE EF 02 00 EE | Active |
+| 3 | Hello Xiaoxi | FE EF 03 00 EE | Active |
+| 4 | Increase volume | FE EF 04 00 EE | Active |
+| 5 | Decrease volume | FE EF 05 00 EE | Active |
+| 6 | Maximum volume | FE EF 06 00 EE | Active |
+| 7 | Medium volume | FE EF 07 00 EE | Active |
+| 8 | Minimum volume | FE EF 08 00 EE | Active |
+| 9 | Enable playback | FE EF 09 00 EE | Active |
+| 10 | Disable playback | FE EF 0A 00 EE | Active |
+
+### Command Words (ID 11-83, 113)
+
+| ID | Command Word | Serial Frame | Playback Mode |
+|---|---|---|---|
+| 11 | Car stop | FE EF 00 01 EE | Active |
+| 12 | Park | FE EF 00 02 EE | Active |
+| 13 | Car sleep | FE EF 00 03 EE | Active |
+| 14 | Car forward | FE EF 00 04 EE | Active |
+| 15 | Car backward | FE EF 00 05 EE | Active |
+| 16 | Car turn left | FE EF 00 06 EE | Active |
+| 17 | Car turn right | FE EF 00 07 EE | Active |
+| 18 | Car rotate left | FE EF 00 08 EE | Active |
+| 19 | Car rotate right | FE EF 00 09 EE | Active |
+| 20 | Turn off light | FE EF 00 0A EE | Active |
+| 21 | Red light on | FE EF 00 0B EE | Active |
+| 22 | Green light on | FE EF 00 0C EE | Active |
+| 23 | Blue light on | FE EF 00 0D EE | Active |
+| 24 | Yellow light on | FE EF 00 0E EE | Active |
+| 25 | Turn on running light | FE EF 00 0F EE | Active |
+| 26 | Turn on gradient light | FE EF 00 10 EE | Active |
+| 27 | Turn on breathing light | FE EF 00 11 EE | Active |
+| 28 | Show battery | FE EF 00 12 EE | Active |
+| 29 | Navigate to position one | FE EF 00 13 EE | Active |
+| 30 | Navigate to position two | FE EF 00 14 EE | Active |
+| 31 | Navigate to position three | FE EF 00 15 EE | Active |
+| 32 | Navigate to position four | FE EF 00 20 EE | Active |
+| 33 | Return to origin | FE EF 00 21 EE | Active |
+| 34 | Turn off line following | FE EF 00 16 EE | Active |
+| 35 | Follow red line | FE EF 00 17 EE | Active |
+| 36 | Follow green line | FE EF 00 18 EE | Active |
+| 37 | Follow blue line | FE EF 00 19 EE | Active |
+| 38 | Follow yellow line | FE EF 00 1A EE | Active |
+| 39 | Enable following | FE EF 00 1B EE | Active |
+| 40 | Disable following | FE EF 00 1C EE | Active |
+| 41 | Alarm | FE EF 00 26 EE | Active |
+| 42 | Up | FE EF 00 27 EE | Active |
+| 43 | Down | FE EF 00 28 EE | Active |
+| 44 | Left | FE EF 00 29 EE | Active |
+| 45 | Right | FE EF 00 2A EE | Active |
+| 46 | Clamp | FE EF 00 2B EE | Active |
+| 47 | Release | FE EF 00 2C EE | Active |
+| 48 | Clap | FE EF 00 2D EE | Active |
+| 49 | Nod | FE EF 00 2E EE | Active |
+| 50 | Pray | FE EF 00 2F EE | Active |
+| 51 | Kneel | FE EF 00 30 EE | Active |
+| 52 | Initial position | FE EF 00 31 EE | Active |
+| 53 | Startle | FE EF 00 32 EE | Active |
+| 54 | Human pyramid | FE EF 00 33 EE | Active |
+| 55 | Dance | FE EF 00 34 EE | Active |
+| 56 | Clamp block | FE EF 00 35 EE | Active |
+| 57 | Transport | FE EF 00 36 EE | Active |
+| 58 | Input complete | FE EF 00 37 EE | Active |
+| 59 | Input end | FE EF 00 38 EE | Active |
+| 60 | Motion action | FE EF 00 39 EE | Active |
+| 61 | Clear action | FE EF 00 3A EE | Active |
+| 62 | What color is this | FE EF 00 3C EE | Active |
+| 63 | Start color sorting | FE EF 00 3D EE | Active |
+| 64 | Start color grasping | FE EF 00 46 EE | Active |
+| 65 | Start face tracking | FE EF 00 47 EE | Active |
+| 66 | Start yellow tracking | FE EF 00 48 EE | Active |
+| 67 | Start red tracking | FE EF 00 49 EE | Active |
+| 68 | Start green tracking | FE EF 00 4A EE | Active |
+| 69 | Start blue tracking | FE EF 00 4B EE | Active |
+| 70 | Cancel tracking | FE EF 00 4C EE | Active |
+| 71 | Grasp yellow | FE EF 00 4D EE | Active |
+| 72 | Grasp red | FE EF 00 4E EE | Active |
+| 73 | Grasp green | FE EF 00 4F EE | Active |
+| 74 | Grasp blue | FE EF 00 50 EE | Active |
+| 75 | Placement complete | FE EF 00 51 EE | Active |
+| 76 | Push over | FE EF 00 52 EE | Active |
+| 77 | Start sorting | FE EF 00 5C EE | Active |
+| 78 | Red | FE EF 00 57 EE | Active |
+| 79 | Green | FE EF 00 58 EE | Active |
+| 80 | Blue | FE EF 00 59 EE | Active |
+| 81 | Yellow | FE EF 00 5A EE | Active |
+| 82 | No | FE EF 00 5B EE | Active |
+| 83 | What kind of trash is this | FE EF 00 5E EE | Active |
+| 113 | Clean the room | FE EF 00 8B EE | Active |
+
+### Passive Playback Words (ID 84-112, 114)
+
+| ID | Command Word | Serial Frame | Playback Mode |
+|---|---|---|---|
+| 84 | This is red | FE EF FF 5F EE | Passive |
+| 85 | This is blue | FE EF FF 60 EE | Passive |
+| 86 | This is green | FE EF FF 61 EE | Passive |
+| 87 | This is yellow | FE EF FF 62 EE | Passive |
+| 88 | Yellow detected | FE EF FF 63 EE | Passive |
+| 89 | Green detected | FE EF FF 64 EE | Passive |
+| 90 | Blue detected | FE EF FF 65 EE | Passive |
+| 91 | Red detected | FE EF FF 66 EE | Passive |
+| 92 | Initialization complete | FE EF FF 67 EE | Passive |
+| 93 | The first color to sort is | FE EF FF 68 EE | Passive |
+| 94 | The second color to sort is | FE EF FF 69 EE | Passive |
+| 95 | The third color to sort is | FE EF FF 6A EE | Passive |
+| 96 | The fourth color to sort is | FE EF FF 6B EE | Passive |
+| 97 | This is a can, which is recyclable waste | FE EF FF 6C EE | Passive |
+| 98 | This is an old schoolbag, which is recyclable waste | FE EF FF 6D EE | Passive |
+| 99 | This is a newspaper, which is recyclable waste | FE EF FF 6E EE | Passive |
+| 100 | This is a book, which is recyclable waste | FE EF FF 6F EE | Passive |
+| 101 | This is a syringe, which is toxic waste | FE EF FF 70 EE | Passive |
+| 102 | This is a used battery, which is toxic waste | FE EF FF 71 EE | Passive |
+| 103 | This is expired cosmetics, which is toxic waste | FE EF FF 72 EE | Passive |
+| 104 | This is expired medicine, which is toxic waste | FE EF FF 73 EE | Passive |
+| 105 | This is a fish bone, which is wet waste | FE EF FF 74 EE | Passive |
+| 106 | This is a watermelon rind, which is wet waste | FE EF FF 75 EE | Passive |
+| 107 | This is an apple core, which is wet waste | FE EF FF 76 EE | Passive |
+| 108 | This is an eggshell, which is wet waste | FE EF FF 77 EE | Passive |
+| 109 | These are disposable chopsticks, which is dry waste | FE EF FF 78 EE | Passive |
+| 110 | This is a cigarette butt, which is dry waste | FE EF FF 79 EE | Passive |
+| 111 | This is a peach pit, which is dry waste | FE EF FF 80 EE | Passive |
+| 112 | This is toilet paper, which is dry waste | FE EF FF 8A EE | Passive |
+| 114 | It is sunny now | FE EF FF 8C EE | Passive |
+
+---
+
+## 11. ROS1 Topics
+
+| Topic | Type | Direction | Description |
+|---|---|---|---|
+| `/juxi_voice_cmd` | String | Publish | Recognized command text |
+| `/juxi_passive_play` | String | Subscribe | Passive playback text → write 0xD1 (I2C) or send a serial frame |
+| `/juxi_func_play` | String | Subscribe | Function-word playback text → write 0xD2 (I2C) or send a serial frame |
+| `/juxi_cmd_play` | String | Subscribe | Command-word playback text → write 0xD3 (I2C) or send a serial frame |
+| `/juxi_visual_marker` | Marker | Publish | RViz visualization marker |
+| `/juxi_visual_markers` | MarkerArray | Publish | RViz multiple markers (robotic arm, battery, alarm, etc.) |
+
+---
+
+## 12. Troubleshooting
+
+**"AI Voice Interaction Module not detected" on startup**
+
+Check whether the device file for the corresponding wiring option exists:
+```bash
+# I2C 接线
+ls /dev/i2c-1
+sudo i2cdetect -y 1   # 应看到 0x2A
+
+# Type-C 接线
+ls /dev/ttyUSB0 /dev/ttyACM0
+
+# UART 接线
+ls /dev/ttyAMA0 /dev/ttyS0
+```
+
+**Serial permission error**
+
+```bash
+sudo chmod 666 /dev/ttyUSB0   # 或 /dev/ttyACM0 等
+# 或加入 dialout 用户组（需要重新登录）
+sudo usermod -aG dialout $USER
+```
+
+**I2C permission error**
+
+```bash
+sudo chmod 666 /dev/i2c-1
+# 或加入 i2c 用户组（需要重新登录）
+sudo usermod -aG i2c $USER
+```
+
+**No cube in RViz**
+
+- Check whether Fixed Frame is `map`
+- Check whether Topic is `/juxi_visual_marker`
+- Confirm that the rviz_control.py node has been started
+
+**No response to commands after wake-up**
+
+```bash
+rostopic echo /juxi_voice_cmd
+```
+If there is data → an RViz configuration problem; if there is no data → a wiring/communication problem.
+
+**rosrun cannot find the node**
+
+Confirm that the build has been run and the environment sourced:
+```bash
+cd ~/juxi_speech_ws
+catkin_make
+source devel/setup.bash
+```
+
+**Syntax error reported**
+
+```bash
+# 确认 Python 脚本有执行权限
+chmod +x ~/juxi_speech_ws/src/juxi_voice/scripts/voice_node.py
+chmod +x ~/juxi_speech_ws/src/juxi_voice/scripts/rviz_control.py
+```

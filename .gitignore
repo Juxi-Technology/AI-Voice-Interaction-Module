@@ -1,0 +1,39 @@
+# ---- OS / editors ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# ---- Arduino ----
+build/
+*.elf
+*.map
+
+# ---- Keil / STC8 ----
+*.LST
+*.OBJ
+*.M51
+*.uvgui.*
+*.plg
+*.lnp
+*.bak
+
+# ---- ROS ----
+install/
+log/
+*.bag
